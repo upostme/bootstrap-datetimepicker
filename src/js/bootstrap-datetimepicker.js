@@ -60,6 +60,7 @@
         var picker = {},
             date,
             viewDate,
+            dates = [],
             unset = true,
             input,
             component = false,
@@ -473,10 +474,47 @@
             },
 
             notifyEvent = function (e) {
-                if (e.type === 'dp.change' && ((e.date && e.date.isSame(e.oldDate)) || (!e.date && !e.oldDate))) {
-                    return;
+                if (e.type === 'dp.change') {
+                    if (Array.isArray(e.date) && Array.isArray(e.oldDate)) {
+                        if (!compareDates(e.date,e.oldDate)) {
+                            return;
+                        }
+                    } else if ((e.date && e.date.isSame(e.oldDate)) || (!e.date && !e.oldDate)) {
+                        return;
+                    } else if ((!e.date && Array.isArray(e.oldDate) && e.oldDate.length === 0) || (!e.oldDate && Array.isArray(e.date) && e.date.length === 0)) {
+                        return;
+                    }
                 }
                 element.trigger(e);
+            },
+
+            compareDates = function (d1, d2) {
+                var a1 = [],
+                    a2 = [],
+                    foundIndex = -1;
+
+                if (Array.isArray(d1) && Array.isArray(d2)) {
+                    if (d1.length !== d2.length) {
+                        return true;
+                    }
+                    a1 = $.map(d1, function (item) {
+                        return item.unix();
+                    });
+                    a2 = $.map(d2, function (item) {
+                        return item.unix();
+                    });
+                    $.each(d1, function (index, item) {
+                        foundIndex = a2.indexOf(item.unix());
+                        if (foundIndex > -1) {
+                            a2.splice(foundIndex, 1);
+                            a1.splice(a1.indexOf(item.unix()), 1);
+                        }
+                    });
+                    return a1.length > 0 || a2.length > 0;
+                } else if (!Array.isArray(d1) && !Array.isArray(d2)) {
+                    return !d1.isSame(d2);
+                }
+                return true;
             },
 
             viewUpdate = function (e) {
@@ -496,6 +534,8 @@
                 }
                 if (dir) {
                     currentViewMode = Math.max(minViewModeNumber, Math.min(3, currentViewMode + dir));
+                } else {
+                    currentViewMode = 0;
                 }
                 widget.find('.datepicker > div').hide().filter('.datepicker-' + datePickerModes[currentViewMode].clsName).show();
             },
@@ -569,6 +609,16 @@
                     }
                 }
                 return true;
+            },
+
+            findDate = function (searchDate) {
+                var found = false;
+                $.each(dates, function (index, item) {
+                    if (searchDate.isSame(item, 'd')) {
+                        found = true;
+                    }
+                });
+                return found;
             },
 
             fillMonths = function () {
@@ -729,8 +779,15 @@
                     if (currentDate.isAfter(viewDate, 'M')) {
                         clsNames.push('new');
                     }
-                    if (currentDate.isSame(date, 'd') && !unset) {
-                        clsNames.push('active');
+
+                    if (options.multiDate) {
+                        if (findDate(currentDate)) {
+                            clsNames.push('active');
+                        }
+                    } else {
+                        if (currentDate.isSame(date, 'd') && !unset) {
+                            clsNames.push('active');
+                        }
                     }
                     if (!isValid(currentDate, 'd')) {
                         clsNames.push('disabled');
@@ -848,10 +905,17 @@
             },
 
             setValue = function (targetMoment) {
-                var oldDate = unset ? null : date;
+                var oldDate = unset ? null : date,
+                    dateRemoved = false,
+                    displayDates = [];
+
+                if (options.multiDate) {
+                    oldDate = dates;
+                }
 
                 // case of calling setValue(null or false)
-                if (!targetMoment) {
+                if (!targetMoment || (Array.isArray(targetMoment) && targetMoment.length === 0)) {
+                    dates = [];
                     unset = true;
                     input.val('');
                     element.data('date', '');
@@ -864,47 +928,103 @@
                     return;
                 }
 
-                targetMoment = targetMoment.clone().locale(options.locale);
+                if (options.multiDate) {
+                    if (Array.isArray(targetMoment)) {
+                        targetMoment = $.map(targetMoment, function (item) {
+                            return item.clone().locale(options.locale);
+                        });
 
-                if (hasTimeZone()) {
-                    targetMoment.tz(options.timeZone);
-                }
+                        if (hasTimeZone()) {
+                            targetMoment.tz(options.timeZone);
+                        }
 
-                if (options.stepping !== 1) {
-                    targetMoment.minutes((Math.round(targetMoment.minutes() / options.stepping) * options.stepping)).seconds(0);
-
-                    while (options.minDate && targetMoment.isBefore(options.minDate)) {
-                        targetMoment.add(options.stepping, 'minutes');
+                        dates = targetMoment;
+                        date = targetMoment[0];
+                    } else {
+                        targetMoment = targetMoment.clone().locale(options.locale);
+                        dates = $.grep(dates, function (item) {
+                            if (targetMoment.isSame(item, 'd')) {
+                                dateRemoved = true;
+                            }
+                            return !targetMoment.isSame(item, 'd');
+                        });
+                        if (!dateRemoved) {
+                            dates.push(targetMoment);
+                        } else {
+                            if (dates.length === 0) {
+                                unset = true;
+                                input.val('');
+                                element.data('date', '');
+                                notifyEvent({
+                                    type: 'dp.change',
+                                    date: false,
+                                    oldDate: oldDate
+                                });
+                                update();
+                                return;
+                            }
+                        }
+                        date = targetMoment;
                     }
-                }
-
-                if (isValid(targetMoment)) {
-                    date = targetMoment;
                     viewDate = date.clone();
-                    input.val(date.format(actualFormat));
-                    element.data('date', date.format(actualFormat));
+                    displayDates = $.map(dates, function (item) {
+                        return item.format(actualFormat);
+                    });
+                    input.val(displayDates.join(options.multiDateDelimiter));
+                    element.data('date', displayDates.join(options.multiDateDelimiter));
                     unset = false;
                     update();
                     notifyEvent({
                         type: 'dp.change',
-                        date: date.clone(),
+                        date:
+                            $.map(dates, function (item) {
+                                return item.clone();
+                            }),
                         oldDate: oldDate
                     });
                 } else {
-                    if (!options.keepInvalid) {
-                        input.val(unset ? '' : date.format(actualFormat));
-                    } else {
+                    targetMoment = targetMoment.clone().locale(options.locale);
+
+                    if (hasTimeZone()) {
+                        targetMoment.tz(options.timeZone);
+                    }
+
+                    if (options.stepping !== 1) {
+                        targetMoment.minutes((Math.round(targetMoment.minutes() / options.stepping) * options.stepping)).seconds(0);
+
+                        while (options.minDate && targetMoment.isBefore(options.minDate)) {
+                            targetMoment.add(options.stepping, 'minutes');
+                        }
+                    }
+
+                    if (isValid(targetMoment)) {
+                        date = targetMoment;
+                        viewDate = date.clone();
+                        input.val(date.format(actualFormat));
+                        element.data('date', date.format(actualFormat));
+                        unset = false;
+                        update();
                         notifyEvent({
                             type: 'dp.change',
+                            date: date.clone(),
+                            oldDate: oldDate
+                        });
+                    } else {
+                        if (!options.keepInvalid) {
+                            input.val(unset ? '' : date.format(actualFormat));
+                        } else {
+                            notifyEvent({
+                                type: 'dp.change',
+                                date: targetMoment,
+                                oldDate: oldDate
+                            });
+                        }
+                        notifyEvent({
+                            type: 'dp.error',
                             date: targetMoment,
                             oldDate: oldDate
                         });
                     }
-                    notifyEvent({
-                        type: 'dp.error',
-                        date: targetMoment,
-                        oldDate: oldDate
-                    });
                 }
             },
 
@@ -952,14 +1072,50 @@
                 return picker;
             },
 
+            disable = function () {
+                var monthsView = widget.find('.datepicker-months'),
+                    yearsView = widget.find('.datepicker-years'),
+                    decadesView = widget.find('.datepicker-decades'),
+                    daysView = widget.find('.datepicker-days');
+
+                $(window).off('resize', place);
+                widget.off('click', '[data-action]');
+                widget.off('mousedown', false);
+
+                decadesView.find('th').addClass('disabled');
+                yearsView.find('th').addClass('disabled');
+                monthsView.find('th').addClass('disabled');
+                monthsView.find('tbody').find('span').removeClass('active').addClass('disabled');
+                daysView.find('th').addClass('disabled');
+                daysView.find('tbody').find('td').removeClass('active').addClass('disabled');
+            },
+
+            enable = function () {
+                update();
+
+                $(window).off('resize', place).on('resize', place);
+                widget.off('click', '[data-action]').on('click', '[data-action]', doAction); // this handles clicks on the widget
+                widget.off('mousedown', false).on('mousedown', false);
+            },
+
             clear = function () {
                 setValue(null);
             },
 
             parseInputDate = function (inputDate) {
                 if (options.parseInputDate === undefined) {
-                    if (!moment.isMoment(inputDate) || inputDate instanceof Date) {
-                        inputDate = getMoment(inputDate);
+                    if (Array.isArray(inputDate)) {
+                        inputDate = $.map(inputDate, function (item) {
+                            if (!moment.isMoment(item) || item instanceof Date) {
+                                return getMoment(item);
+                            } else {
+                                return item;
+                            }
+                        });
+                    } else {
+                        if (!moment.isMoment(inputDate) || inputDate instanceof Date) {
+                            inputDate = getMoment(inputDate);
+                        }
                     }
                 } else {
                     inputDate = options.parseInputDate(inputDate);
@@ -1224,7 +1380,12 @@
                     return picker;
                 }
                 if (input.val() !== undefined && input.val().trim().length !== 0) {
-                    setValue(parseInputDate(input.val().trim()));
+                    if (options.multiDate) {
+                        currentMoment = parseInputDate(input.val().trim().split(options.multiDateDelimiter));
+                    } else {
+                        currentMoment = parseInputDate(input.val().trim());
+                    }
+                    setValue(currentMoment);
                 } else if (unset && options.useCurrent && (options.inline || (input.is('input') && input.val().trim().length === 0))) {
                     currentMoment = getMoment();
                     if (typeof options.useCurrent === 'string') {
@@ -1457,7 +1618,11 @@
         picker.disable = function () {
             ///<summary>Disables the input element, the component is attached to, by adding a disabled="true" attribute to it.
             ///If the widget was visible before that call it is hidden. Possibly emits dp.hide</summary>
-            hide();
+            if (options.inline) {
+                disable();
+            } else {
+                hide();
+            }
             if (component && component.hasClass('btn')) {
                 component.addClass('disabled');
             }
@@ -1467,6 +1632,9 @@
 
         picker.enable = function () {
             ///<summary>Enables the input element, the component is attached to, by removing disabled attribute from it.</summary>
+            if (options.inline) {
+                enable();
+            }
             if (component && component.hasClass('btn')) {
                 component.removeClass('disabled');
             }
@@ -1517,11 +1685,25 @@
                 if (unset) {
                     return null;
                 }
-                return date.clone();
+                if (options.multiDate) {
+                    return $.map(dates, function (item) {
+                        return item.clone();
+                    });
+                } else {
+                    return date.clone();
+                }
             }
 
             if (newDate !== null && typeof newDate !== 'string' && !moment.isMoment(newDate) && !(newDate instanceof Date)) {
-                throw new TypeError('date() parameter must be one of [null, string, moment or Date]');
+                if (options.multiDate && Array.isArray(newDate)) {
+                    $.each(newDate, function (index, item) {
+                        if (typeof item !== 'string' && !moment.isMoment(item) && !(item instanceof Date)) {
+                            throw new TypeError('date() parameter must be an array of the type [string, moment or Date]');
+                        }
+                    });
+                } else {
+                    throw new TypeError('date() parameter must be one of [null, string, moment or Date]');
+                }
             }
 
             setValue(newDate === null ? null : parseInputDate(newDate));
@@ -1543,7 +1725,11 @@
             options.format = newFormat;
             if (actualFormat) {
                 initFormatting(); // reinit formatting
+                if (options.multiDate && hasTime()) {
+                    throw new Error('Multiple dates cannot be used with time pickers');
+                }
             }
+
             return picker;
         };
 
@@ -2173,6 +2359,36 @@
             return picker;
         };
 
+        picker.multiDate = function (multiDate) {
+            if (arguments.length === 0) {
+                return options.multiDate;
+            }
+
+            if (typeof multiDate !== 'boolean') {
+                throw new TypeError('multiDate() expects a boolean parameter');
+            }
+
+            if (actualFormat && options.multiDate && hasTime()) {
+                throw new Error('Multiple dates cannot be used with time pickers');
+            }
+
+            options.multiDate = multiDate;
+            return picker;
+        };
+
+        picker.multiDateDelimiter = function (multiDateDelimiter) {
+            if (arguments.length === 0) {
+                return options.multiDateDelimiter;
+            }
+
+            if (typeof multiDateDelimiter !== 'string') {
+                throw new TypeError('multiDateDelimiter() expects a string parameter');
+            }
+
+            options.multiDateDelimiter = multiDateDelimiter;
+            return picker;
+        };
+
         picker.datepickerInput = function (datepickerInput) {
             if (arguments.length === 0) {
                 return options.datepickerInput;
@@ -2362,13 +2578,21 @@
 
         initFormatting();
 
+        if (options.multiDate && hasTime()) {
+            throw new Error('Could not initialize DateTimePicker because multiple dates cannot be used with time pickers');
+        }
+
         attachDatePickerElementEvents();
 
         if (input.prop('disabled')) {
             picker.disable();
         }
         if (input.is('input') && input.val().trim().length !== 0) {
-            setValue(parseInputDate(input.val().trim()));
+            if (options.multiDate) {
+                setValue(parseInputDate(input.val().trim().split(options.multiDateDelimiter)));
+            } else {
+                setValue(parseInputDate(input.val().trim()));
+            }
         }
         else if (options.defaultDate && input.attr('placeholder') === undefined) {
             setValue(options.defaultDate);
@@ -2446,6 +2670,8 @@
     };
 
     $.fn.datetimepicker.defaults = {
+        multiDate: false,
+        multiDateDelimiter: ',',
         timeZone: '',
         format: false,
         dayViewHeaderFormat: 'MMMM YYYY',
