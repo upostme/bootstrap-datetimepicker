@@ -2600,6 +2600,9 @@
         if (options.inline) {
             show();
         }
+         
+        picker.setValueInner = setValue;
+        
         return picker;
     };
 
